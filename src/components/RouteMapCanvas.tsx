@@ -1,0 +1,356 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
+import * as polyline from '@mapbox/polyline';
+import type { Activity } from '../types';
+import { hasRoute, routeForActivity } from '../core/routeFallback';
+import { useLocale } from '../hooks/useLocale';
+import './RouteMap.css';
+
+// Vite rebundles maplibre-gl, so its relative worker lookup would 404.
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
+
+// The most recent run with a route; other sports only if there is no run at all.
+function latestRunWithRoute(activities: Activity[]) {
+  const mapped = activities.filter(hasRoute);
+  const runs = mapped.filter((activity) => activity.type === 'Run');
+  return (runs.length ? runs : mapped).reduce<Activity | null>(
+    (latest, activity) =>
+      !latest || activity.start_date_local > latest.start_date_local
+        ? activity
+        : latest,
+    null
+  );
+}
+
+export interface RouteMapProps {
+  activities: Activity[];
+  allActivities?: Activity[];
+  selectedActivity?: Activity | null;
+  dark?: boolean;
+  onClearSelection?: () => void;
+}
+
+const routeCache = new WeakMap<
+  Activity,
+  {
+    type: 'Feature';
+    properties: { type: string };
+    geometry: { type: 'LineString'; coordinates: number[][] };
+  }[]
+>();
+
+export function RouteMapCanvas({
+  activities,
+  allActivities = activities,
+  selectedActivity,
+  dark,
+  onClearSelection,
+}: RouteMapProps) {
+  const { locale } = useLocale();
+  const zh = locale === 'zh';
+  const panelRef = useRef<HTMLElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const styleReadyRef = useRef(false);
+  const cameraRef = useRef<maplibregl.CameraOptions | null>(null);
+  const fittedRef = useRef<unknown>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(
+    'loading'
+  );
+  const [retry, setRetry] = useState(0);
+  const style = `https://basemaps.cartocdn.com/gl/${dark === false ? 'positron' : 'dark-matter'}-gl-style/style.json`;
+
+  const displayActivity = useMemo(
+    () =>
+      selectedActivity
+        ? routeForActivity(selectedActivity, allActivities)
+        : null,
+    [selectedActivity, allActivities]
+  );
+  const latestRun = useMemo(() => latestRunWithRoute(activities), [activities]);
+  const shownActivity = selectedActivity ? displayActivity : latestRun;
+  const fallbackActivity =
+    selectedActivity && !hasRoute(selectedActivity) ? displayActivity : null;
+
+  const routes = useMemo(() => {
+    const items = shownActivity ? [shownActivity] : [];
+    return items.flatMap((activity) => {
+      const cached = routeCache.get(activity);
+      if (cached) return cached;
+      if (!activity.summary_polyline) return [];
+      try {
+        const coordinates = polyline
+          .decode(activity.summary_polyline)
+          .map(([lat, lng]) => [lng, lat])
+          .filter(
+            ([lng, lat]) =>
+              Number.isFinite(lng) &&
+              Number.isFinite(lat) &&
+              Math.abs(lng) <= 180 &&
+              Math.abs(lat) <= 90
+          );
+        if (coordinates.length < 2) return [];
+        const features = [
+          {
+            type: 'Feature' as const,
+            properties: { type: activity.type },
+            geometry: { type: 'LineString' as const, coordinates },
+          },
+        ];
+        routeCache.set(activity, features);
+        return features;
+      } catch {
+        return [];
+      }
+    });
+  }, [shownActivity]);
+
+  const routeBounds = useMemo(() => {
+    const bounds = new maplibregl.LngLatBounds();
+    for (const route of routes) {
+      for (const coord of route.geometry.coordinates)
+        bounds.extend(coord as [number, number]);
+    }
+    return bounds;
+  }, [routes]);
+
+  const fitRoutes = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || routeBounds.isEmpty()) return;
+    map.fitBounds(routeBounds, {
+      padding: { top: 35, bottom: 35, left: 35, right: 65 },
+      maxZoom: 16,
+      duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? 0
+        : 500,
+    });
+  }, [routeBounds]);
+
+  const drawRoutes = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || !styleReadyRef.current) return;
+    const data = { type: 'FeatureCollection' as const, features: routes };
+    const source = map.getSource('routes') as
+      maplibregl.GeoJSONSource | undefined;
+    if (source) source.setData(data);
+    else {
+      map.addSource('routes', { type: 'geojson', data });
+      map.addLayer({
+        id: 'routes',
+        type: 'line',
+        source: 'routes',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': [
+            'match',
+            ['get', 'type'],
+            'Run',
+            '#f97316',
+            'Ride',
+            '#3b82f6',
+            '#4dd2ff',
+          ],
+        },
+      });
+    }
+    map.setPaintProperty('routes', 'line-width', 3.5);
+    map.setPaintProperty('routes', 'line-opacity', 1);
+    if (fittedRef.current !== routes) {
+      fittedRef.current = routes;
+      fitRoutes();
+    }
+  }, [routes, fitRoutes]);
+
+  useEffect(() => {
+    if (!containerRef.current || !panelRef.current) return;
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: { version: 8, sources: {}, layers: [] },
+      center: [121.4, 31.2],
+      zoom: 10,
+      ...cameraRef.current,
+      locale: zh
+        ? {
+            'Map.Title': '跑步路线地图',
+            'NavigationControl.ZoomIn': '放大',
+            'NavigationControl.ZoomOut': '缩小',
+            'NavigationControl.ResetBearing': '恢复朝北',
+            'FullscreenControl.Enter': '全屏查看',
+            'FullscreenControl.Exit': '退出全屏',
+            'AttributionControl.ToggleAttribution': '地图来源',
+          }
+        : {},
+    });
+    mapRef.current = map;
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    map.addControl(
+      new maplibregl.FullscreenControl({ container: panelRef.current }),
+      'top-right'
+    );
+    map.addControl(
+      new maplibregl.ScaleControl({ unit: 'metric', maxWidth: 90 }),
+      'top-left'
+    );
+    const observer = new ResizeObserver(() => map.resize());
+    observer.observe(containerRef.current);
+    return () => {
+      cameraRef.current = {
+        center: map.getCenter(),
+        zoom: map.getZoom(),
+        bearing: map.getBearing(),
+        pitch: map.getPitch(),
+      };
+      observer.disconnect();
+      map.remove();
+      mapRef.current = null;
+    };
+  }, [zh]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    let failed = false;
+    const onError = () => {
+      failed = true;
+      setStatus('error');
+    };
+    const onIdle = () => {
+      if (!failed) setStatus('ready');
+    };
+    const onLoading = () => setStatus('loading');
+    map.on('error', onError);
+    map.on('idle', onIdle);
+    map.once('styledataloading', onLoading);
+    styleReadyRef.current = false;
+    map.setStyle(style, { diff: false });
+    const timer = window.setTimeout(() => {
+      if (!map.isStyleLoaded()) setStatus('error');
+    }, 15000);
+    return () => {
+      window.clearTimeout(timer);
+      map.off('error', onError);
+      map.off('idle', onIdle);
+      map.off('styledataloading', onLoading);
+    };
+  }, [style, retry, zh]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const onStyleLoad = () => {
+      styleReadyRef.current = true;
+      drawRoutes();
+    };
+    map.on('style.load', onStyleLoad);
+    drawRoutes();
+    return () => {
+      map.off('style.load', onStyleLoad);
+    };
+  }, [drawRoutes, style, retry, zh]);
+
+  useEffect(() => {
+    let wasFullscreen = document.fullscreenElement === panelRef.current;
+    let frame = 0;
+    const onFullscreen = () => {
+      const isFullscreen = document.fullscreenElement === panelRef.current;
+      if (isFullscreen || wasFullscreen) {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          mapRef.current?.resize();
+          fitRoutes();
+        });
+      }
+      wasFullscreen = isFullscreen;
+    };
+    document.addEventListener('fullscreenchange', onFullscreen);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('fullscreenchange', onFullscreen);
+    };
+  }, [fitRoutes]);
+
+  return (
+    <section
+      ref={panelRef}
+      className="route-map"
+      aria-label={zh ? '路线地图' : 'Route map'}
+    >
+      <div className="route-map-header">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold">
+            {zh ? '路线地图' : 'Route map'}
+          </h2>
+          <p
+            className="truncate text-xs text-[var(--color-muted)]"
+            title={shownActivity?.name}
+          >
+            {shownActivity &&
+              `${shownActivity.name || shownActivity.start_date_local.slice(0, 10)} · ${(shownActivity.distance / 1000).toFixed(1)} km`}
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          {selectedActivity && onClearSelection && (
+            <button className="route-map-action" onClick={onClearSelection}>
+              {zh ? '返回最新' : 'Latest run'}
+            </button>
+          )}
+          <button
+            className="route-map-action"
+            disabled={!routes.length}
+            onClick={fitRoutes}
+            title={zh ? '定位到当前轨迹' : 'Fit this route'}
+          >
+            {zh ? '定位轨迹' : 'Fit route'}
+          </button>
+        </div>
+      </div>
+      {fallbackActivity && (
+        <p
+          role="status"
+          className="px-4 pb-2 text-xs text-[var(--color-muted)]"
+        >
+          {zh
+            ? `此活动没有可用的 GPS 轨迹，现显示之前最近一次有轨迹的活动：${fallbackActivity.name}（${fallbackActivity.start_date_local}）。`
+            : `This activity has no usable GPS route. Showing the most recent earlier mapped activity: ${fallbackActivity.name} (${fallbackActivity.start_date_local}).`}
+        </p>
+      )}
+      <div className="route-map-body">
+        <div ref={containerRef} className="h-full w-full" />
+        {!routes.length && (
+          <div className="route-map-empty" role="status">
+            {zh
+              ? selectedActivity
+                ? '这次活动没有 GPS 轨迹'
+                : '当前筛选没有 GPS 轨迹'
+              : 'No GPS route available'}
+          </div>
+        )}
+      </div>
+      <div className="route-map-footer">
+        <span role="status" aria-live="polite">
+          {status === 'error'
+            ? zh
+              ? '底图加载失败，请重试'
+              : 'Basemap failed to load'
+            : status === 'loading'
+              ? zh
+                ? '正在加载地图…'
+                : 'Loading map…'
+              : zh
+                ? '底图 · CARTO'
+                : 'Basemap · CARTO'}
+        </span>
+        {status === 'error' && (
+          <button
+            className="route-map-action"
+            onClick={() => setRetry((value) => value + 1)}
+          >
+            {zh ? '重试' : 'Retry'}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
