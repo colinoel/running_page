@@ -9,9 +9,17 @@ import {
   YAxis,
 } from 'recharts';
 import type { Activity } from '../types';
+import workouts from '../static/workouts.json';
 
 type View = 'month' | 'year';
+type Category = 'Run' | 'Strength' | 'Other';
 
+interface Entry {
+  date: string;
+  value: number;
+}
+
+const CATEGORIES: Category[] = ['Run', 'Strength', 'Other'];
 const MONTHS = [
   'Jan',
   'Feb',
@@ -27,62 +35,88 @@ const MONTHS = [
   'Dec',
 ];
 
-const km = (meters: number) => Math.round(meters / 10) / 100;
+const round2 = (value: number) => Math.round(value * 100) / 100;
 
-// start_date_local is already local time: read its parts directly.
-const dateParts = (activity: Activity) => ({
-  year: Number(activity.start_date_local.slice(0, 4)),
-  month: Number(activity.start_date_local.slice(5, 7)) - 1,
-  day: Number(activity.start_date_local.slice(8, 10)),
+// Dates are already local: read their parts directly.
+const dateParts = (date: string) => ({
+  year: Number(date.slice(0, 4)),
+  month: Number(date.slice(5, 7)) - 1,
+  day: Number(date.slice(8, 10)),
 });
 
 /** Year × 12 + month, so periods can be compared and stepped as one number. */
 const monthIndex = (year: number, month: number) => year * 12 + month;
 
+const toggleClass = (active: boolean) =>
+  `rounded-md px-3 py-1 text-xs ${
+    active
+      ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]'
+      : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'
+  }`;
+
 export function RunHistoryChart({ activities }: { activities: Activity[] }) {
-  const runs = useMemo(
-    () => activities.filter((activity) => activity.type === 'Run'),
-    [activities]
+  const [category, setCategory] = useState<Category>('Run');
+  const [view, setView] = useState<View>('month');
+  const [selected, setSelected] = useState<number | null>(null);
+  const isRun = category === 'Run';
+  const unitLabel = isRun ? 'km' : 'min';
+
+  const entries = useMemo<Entry[]>(
+    () =>
+      category === 'Run'
+        ? activities
+            .filter((activity) => activity.type === 'Run')
+            .map((activity) => ({
+              date: activity.start_date_local,
+              value: activity.distance / 1000,
+            }))
+        : workouts
+            .filter((workout) => workout.category === category)
+            .map((workout) => ({
+              date: workout.date,
+              value: workout.minutes,
+            })),
+    [activities, category]
   );
+
   const range = useMemo(() => {
-    const indexes = runs.map((run) => {
-      const { year, month } = dateParts(run);
+    const indexes = entries.map(({ date }) => {
+      const { year, month } = dateParts(date);
       return monthIndex(year, month);
     });
     return indexes.length
       ? { first: Math.min(...indexes), last: Math.max(...indexes) }
       : null;
-  }, [runs]);
+  }, [entries]);
 
-  const [view, setView] = useState<View>('month');
-  const [selected, setSelected] = useState<number | null>(null);
   const current = selected ?? range?.last ?? 0;
   const year = Math.floor(current / 12);
   const month = current % 12;
 
   const data = useMemo(() => {
-    const inView = runs.filter((run) => {
-      const parts = dateParts(run);
-      return view === 'year'
-        ? parts.year === year
-        : parts.year === year && parts.month === month;
+    const inView = entries.filter(({ date }) => {
+      const parts = dateParts(date);
+      return parts.year === year && (view === 'year' || parts.month === month);
     });
     const size = view === 'year' ? 12 : new Date(year, month + 1, 0).getDate();
     const buckets = Array.from({ length: size }, (_, index) => ({
       label: view === 'year' ? MONTHS[index] : String(index + 1),
-      meters: 0,
+      value: 0,
     }));
-    for (const run of inView) {
-      const parts = dateParts(run);
-      buckets[view === 'year' ? parts.month : parts.day - 1].meters +=
-        run.distance;
+    for (const entry of inView) {
+      const parts = dateParts(entry.date);
+      buckets[view === 'year' ? parts.month : parts.day - 1].value +=
+        entry.value;
     }
     return {
       count: inView.length,
-      total: km(inView.reduce((sum, run) => sum + run.distance, 0)),
-      bars: buckets.map(({ label, meters }) => ({ label, km: km(meters) })),
+      total: inView.reduce((sum, entry) => sum + entry.value, 0),
+      bars: buckets.map((bucket) => ({
+        ...bucket,
+        value: round2(bucket.value),
+      })),
     };
-  }, [runs, view, year, month]);
+  }, [entries, view, year, month]);
 
   const step = view === 'year' ? 12 : 1;
   const canGoBack =
@@ -94,14 +128,24 @@ export function RunHistoryChart({ activities }: { activities: Activity[] }) {
   const unit = view === 'year' ? 'Month' : 'Day';
   const navButton =
     'rounded px-2 text-sm disabled:cursor-default disabled:opacity-30';
+  const countLabel = isRun
+    ? data.count === 1
+      ? 'run'
+      : 'runs'
+    : data.count === 1
+      ? 'session'
+      : 'sessions';
+  const totalText = isRun
+    ? round2(data.total).toLocaleString('en-US')
+    : (data.total / 60).toLocaleString('en-US', { maximumFractionDigits: 1 });
 
   return (
     <section
-      aria-label="Run history"
+      aria-label="Training history"
       className="w-full min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 sm:p-5"
     >
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-base font-semibold">Run History</h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-base font-semibold">Training History</h2>
         <div className="flex rounded-lg border border-[var(--color-border)] p-1">
           {(['month', 'year'] as const).map((value) => (
             <button
@@ -109,16 +153,28 @@ export function RunHistoryChart({ activities }: { activities: Activity[] }) {
               type="button"
               aria-pressed={view === value}
               onClick={() => setView(value)}
-              className={`rounded-md px-3 py-1 text-xs ${
-                view === value
-                  ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]'
-                  : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'
-              }`}
+              className={toggleClass(view === value)}
             >
               {value === 'month' ? 'Month' : 'Year'}
             </button>
           ))}
         </div>
+      </div>
+      <div className="mb-4 inline-flex rounded-lg border border-[var(--color-border)] p-1">
+        {CATEGORIES.map((value) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={category === value}
+            onClick={() => {
+              setCategory(value);
+              setSelected(null);
+            }}
+            className={toggleClass(category === value)}
+          >
+            {value}
+          </button>
+        ))}
       </div>
       <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
         <div className="flex items-center gap-1">
@@ -145,17 +201,17 @@ export function RunHistoryChart({ activities }: { activities: Activity[] }) {
           </button>
         </div>
         <p className="text-2xl font-semibold text-[var(--color-accent)] tabular-nums">
-          {data.total.toLocaleString('en-US')}{' '}
+          {totalText}{' '}
           <span className="text-sm font-normal text-[var(--color-muted)]">
-            km · {data.count} {data.count === 1 ? 'run' : 'runs'}
+            {isRun ? 'km' : 'h'} · {data.count} {countLabel}
           </span>
         </p>
       </div>
       <div
         role="img"
-        aria-label={`Run history ${title}: ${data.bars
-          .filter((bar) => bar.km > 0)
-          .map((bar) => `${bar.label}: ${bar.km} km`)
+        aria-label={`${category} history ${title}: ${data.bars
+          .filter((bar) => bar.value > 0)
+          .map((bar) => `${bar.label}: ${bar.value} ${unitLabel}`)
           .join(', ')}`}
       >
         <div className="h-52 w-full min-w-0">
@@ -198,8 +254,8 @@ export function RunHistoryChart({ activities }: { activities: Activity[] }) {
                 }}
               />
               <Bar
-                dataKey="km"
-                name="km"
+                dataKey="value"
+                name={unitLabel}
                 fill="var(--color-accent)"
                 radius={[3, 3, 0, 0]}
                 maxBarSize={32}
@@ -209,7 +265,7 @@ export function RunHistoryChart({ activities }: { activities: Activity[] }) {
           </ResponsiveContainer>
         </div>
         <p className="mt-1 text-right text-xs text-[var(--color-muted)]">
-          {unit} · km
+          {unit} · {unitLabel}
         </p>
       </div>
     </section>

@@ -1,6 +1,6 @@
 {
-  "name": "Running Page",
-  "short_name": "Running",
+  "name": "Running Journal",
+  "short_name": "Run Journal",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

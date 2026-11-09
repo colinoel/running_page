@@ -9,17 +9,20 @@ Usage: python run_page/garmin_export_import.py path/to/export.zip
 The last line printed to stdout is a JSON result.
 """
 
+import collections
 import io
 import json
 import os
 import subprocess
 import sys
 import zipfile
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
 from config import FIT_FOLDER, JSON_FILE, SYNCED_FILE
 
 SEEN_FILE = os.path.join(FIT_FOLDER, ".garmin_seen.json")
+WORKOUTS_FILE = os.path.join(os.path.dirname(JSON_FILE), "workouts.json")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SCRIPT_DIR)
 SYNC_SCRIPT = os.path.join(SCRIPT_DIR, "fit_sync.py")
@@ -77,6 +80,59 @@ def extract_new_fit_files(zip_path, known):
     return extracted
 
 
+def workout_category(activity_type):
+    """Run and walk sessions come from FIT files; everything else is a workout."""
+    if activity_type == "walking" or activity_type.endswith("running"):
+        return None
+    return "Strength" if activity_type == "strength_training" else "Other"
+
+
+def read_workouts(zip_path):
+    """Date, category and minutes only: this file is published."""
+    workouts = []
+    with zipfile.ZipFile(zip_path) as archive:
+        for name in archive.namelist():
+            if not name.endswith("summarizedActivities.json"):
+                continue
+            for group in json.loads(archive.read(name)):
+                for activity in group.get("summarizedActivitiesExport", []):
+                    category = workout_category(activity.get("activityType", ""))
+                    if not category or not activity.get("startTimeLocal"):
+                        continue
+                    # startTimeLocal is wall-clock time stored as if it were UTC.
+                    local = datetime.fromtimestamp(
+                        activity["startTimeLocal"] / 1000, timezone.utc
+                    )
+                    workouts.append(
+                        {
+                            "date": local.strftime("%Y-%m-%d"),
+                            "category": category,
+                            "minutes": round(activity.get("duration", 0) / 60000),
+                        }
+                    )
+    return sorted(workouts, key=lambda w: (w["date"], w["category"], w["minutes"]))
+
+
+def merge_workouts(zip_path):
+    """Add this export's workouts; older exports may lack newer entries and vice versa."""
+    known = load_json_list(WORKOUTS_FILE)
+    seen = collections.Counter(json.dumps(w, sort_keys=True) for w in known)
+    new = []
+    for workout in read_workouts(zip_path):
+        key = json.dumps(workout, sort_keys=True)
+        if seen[key]:
+            seen[key] -= 1
+        else:
+            new.append(workout)
+    if new:
+        merged = sorted(
+            known + new, key=lambda w: (w["date"], w["category"], w["minutes"])
+        )
+        with open(WORKOUTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(merged, f)
+    return len(new), len(known) + len(new)
+
+
 def pending_fit_files(synced):
     return [
         n
@@ -118,11 +174,11 @@ def publish_online():
     """Upload the filtered activities; the site then rebuilds itself."""
     if git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != LIVE_BRANCH:
         return False
-    data = os.path.relpath(JSON_FILE, ROOT)
-    git("add", "--", data)
-    if git("diff", "--cached", "--quiet", "--", data).returncode == 0:
+    data = [os.path.relpath(p, ROOT) for p in (JSON_FILE, WORKOUTS_FILE)]
+    git("add", "--", *data)
+    if git("diff", "--cached", "--quiet", "--", *data).returncode == 0:
         return True
-    committed = git("commit", "-m", "Update activities", "--", data)
+    committed = git("commit", "-m", "Update activities", "--", *data)
     if committed.returncode != 0:
         return False
     return git("push", LIVE_REMOTE, f"{LIVE_BRANCH}:main").returncode == 0
@@ -146,12 +202,13 @@ def import_export(zip_path):
         with open(SEEN_FILE, "w", encoding="utf-8") as f:
             json.dump(sorted(seen), f)
 
+    new_workouts, workout_total = merge_workouts(zip_path)
     total, latest = activity_count_and_latest()
-    added = total - before
+    added = total - before + new_workouts
     return {
         "ok": True,
         "added": added,
-        "total": total,
+        "total": total + workout_total,
         "newFiles": new_files,
         "latest": latest,
         "published": publish_online() if added else None,
