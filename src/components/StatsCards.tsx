@@ -376,7 +376,7 @@ export const StatsCards = memo(function StatsCards({
           {t('yearlyGoal')}
           {goalEditButton('yearly')}
         </p>
-        <p className="font-mono text-3xl font-bold whitespace-nowrap">
+        <div className="font-mono text-3xl font-bold whitespace-nowrap">
           {goal.unit === 'time'
             ? formatHours(yearSeconds)
             : formatDistance(yearDistance)}
@@ -386,10 +386,10 @@ export const StatsCards = memo(function StatsCards({
               ? `${Math.round(yearGoalMins / 60)}h`
               : `${goal.yearly} km`
           )}
-        </p>
+        </div>
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--color-border)]">
           <div
-            className="h-full rounded-full bg-[var(--color-accent)] transition-all"
+            className="h-full rounded-full bg-[var(--color-accent)]"
             style={{
               width: `${Math.min(goal.unit === 'time' ? (yearSeconds / (yearGoalMins * 60)) * 100 : (yearDistance / yearGoalMeters) * 100, 100)}%`,
             }}
@@ -444,7 +444,7 @@ export const StatsCards = memo(function StatsCards({
           {t('monthlyGoal')}
           {goalEditButton('monthly')}
         </p>
-        <p className="font-mono text-3xl font-bold whitespace-nowrap">
+        <div className="font-mono text-3xl font-bold whitespace-nowrap">
           {goal.unit === 'time'
             ? formatHours(monthSeconds)
             : formatDistance(monthDistance)}
@@ -454,10 +454,10 @@ export const StatsCards = memo(function StatsCards({
               ? `${Math.round(monthGoalMins / 60)}h`
               : `${goal.monthly} km`
           )}
-        </p>
+        </div>
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--color-border)]">
           <div
-            className="h-full rounded-full bg-[var(--color-accent)] transition-all"
+            className="h-full rounded-full bg-[var(--color-accent)]"
             style={{
               width: `${Math.min(goal.unit === 'time' ? (monthSeconds / (monthGoalMins * 60)) * 100 : (monthDistance / monthGoalMeters) * 100, 100)}%`,
             }}
@@ -512,7 +512,7 @@ export const StatsCards = memo(function StatsCards({
           {locale === 'zh' ? '周目标' : 'WEEKLY GOAL'}
           {goalEditButton('weekly')}
         </p>
-        <p className="font-mono text-3xl font-bold whitespace-nowrap">
+        <div className="font-mono text-3xl font-bold whitespace-nowrap">
           {goal.unit === 'time'
             ? formatHours(weekSeconds)
             : formatDistance(weekDistance)}
@@ -520,10 +520,10 @@ export const StatsCards = memo(function StatsCards({
             'weekly',
             goal.unit === 'time' ? `${weekGoalMins}m` : `${goal.weekly} km`
           )}
-        </p>
+        </div>
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--color-border)]">
           <div
-            className="h-full rounded-full bg-[var(--color-accent)] transition-all"
+            className="h-full rounded-full bg-[var(--color-accent)]"
             style={{
               width: `${Math.min(goal.unit === 'time' ? (weekSeconds / (weekGoalMins * 60)) * 100 : (weekDistance / weekGoalMeters) * 100, 100)}%`,
             }}

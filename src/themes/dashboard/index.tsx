@@ -27,6 +27,7 @@ import { ProfileCard } from '@/components/ProfileCard';
 import { PersonalBest } from '@/components/PersonalBest';
 import { GarminImport } from '@/components/GarminImport';
 import { RunHistoryChart } from '@/components/RunHistoryChart';
+import { StrengthPRs } from '@/components/StrengthPRs';
 
 const TracksPage = lazy(() =>
   import('@/components/TracksPage').then((module) => ({
@@ -218,6 +219,7 @@ function Dashboard() {
                   activities={activities}
                   onSelectActivity={selectActivity}
                 />
+                <StrengthPRs />
                 <CalendarWidget
                   key={year ?? 'all'}
                   selectedActivity={selectedActivity}
