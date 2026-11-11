@@ -1,7 +1,11 @@
 import { useMemo, useState } from 'react';
 import type { Activity } from '../types';
-import { formatDistance } from '../hooks/useActivities';
+import { parseMovingTime } from '../hooks/useActivities';
 import { useLocale } from '../hooks/useLocale';
+import workouts from '../static/workouts.json';
+
+const activityMinutes = (activity: Activity) =>
+  Math.round(parseMovingTime(activity.moving_time) / 60);
 
 interface CalendarWidgetProps {
   activities: Activity[];
@@ -62,11 +66,31 @@ export function CalendarWidget({
       list.sort((a, b) => a.start_date_local.localeCompare(b.start_date_local));
     return result;
   }, [activities, year, monthIndex]);
+  // Strength sessions have no GPS file, so they come from Garmin's activity list.
+  const strengthByDay = useMemo(() => {
+    const prefix = `${year}-${String(monthIndex + 1).padStart(2, '0')}-`;
+    const result = new Map<number, number[]>();
+    for (const workout of workouts) {
+      if (workout.category !== 'Strength' || !workout.date.startsWith(prefix))
+        continue;
+      const dayNumber = Number(workout.date.slice(8, 10));
+      result.set(dayNumber, [
+        ...(result.get(dayNumber) ?? []),
+        workout.minutes,
+      ]);
+    }
+    return result;
+  }, [year, monthIndex]);
   const monthActivities = [...byDay.values()].flat();
-  const distance = monthActivities.reduce((sum, a) => sum + a.distance, 0);
+  const monthStrength = [...strengthByDay.values()].flat();
+  const sessionCount = monthActivities.length + monthStrength.length;
+  const monthMinutes =
+    monthActivities.reduce((sum, a) => sum + activityMinutes(a), 0) +
+    monthStrength.reduce((sum, minutes) => sum + minutes, 0);
   const offset = (month.getDay() + 6) % 7;
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const dayActivities = day === null ? [] : (byDay.get(day) ?? []);
+  const dayStrength = day === null ? [] : (strengthByDay.get(day) ?? []);
   const moveMonth = (delta: number) => {
     setMonth(new Date(year, monthIndex + delta, 1));
     setDay(null);
@@ -105,8 +129,7 @@ export function CalendarWidget({
       </div>
       <div className="mb-3 flex items-center gap-2 text-xs text-[var(--color-muted)]">
         <span className="mr-auto">
-          {monthActivities.length} {zh ? '次活动' : 'activities'} ·{' '}
-          {formatDistance(distance)} km
+          {sessionCount} {zh ? '次活动' : 'activities'} · {monthMinutes} min
         </span>
         <button
           className="rounded px-2 hover:bg-[var(--color-bg)]"
@@ -137,31 +160,34 @@ export function CalendarWidget({
           if (number < 1 || number > daysInMonth)
             return <span key={i} className="h-9" />;
           const list = byDay.get(number) ?? [];
-          const km = list.reduce((sum, a) => sum + a.distance, 0) / 1000;
+          const strength = strengthByDay.get(number) ?? [];
+          const count = list.length + strength.length;
+          const minutes =
+            list.reduce((sum, a) => sum + activityMinutes(a), 0) +
+            strength.reduce((sum, value) => sum + value, 0);
           return (
             <button
               key={i}
               type="button"
-              disabled={!list.length}
+              disabled={!count}
               aria-pressed={day === number}
-              aria-label={`${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(number).padStart(2, '0')} · ${list.length} ${zh ? '次活动' : 'activities'} · ${km.toFixed(1)} km`}
-              className={`calendar-day relative flex h-9 flex-col items-center justify-center rounded-md text-xs ${list.length ? 'bg-[var(--color-accent)]/15 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/30' : 'text-[var(--color-muted)]'} ${day === number ? 'ring-2 ring-[var(--color-accent)]' : ''}`}
+              aria-label={`${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(number).padStart(2, '0')} · ${count} ${zh ? '次活动' : 'activities'} · ${minutes} min`}
+              className={`calendar-day relative flex h-9 flex-col items-center justify-center rounded-md text-xs ${count ? 'bg-[var(--color-accent)]/15 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/30' : 'text-[var(--color-muted)]'} ${day === number ? 'ring-2 ring-[var(--color-accent)]' : ''}`}
               onClick={() => {
                 setDay(number);
-                if (list.length === 1) onSelectActivity(list[0]);
+                if (list.length === 1 && !strength.length)
+                  onSelectActivity(list[0]);
               }}
             >
               <span>{number}</span>
-              {list.length > 0 && (
-                <span className="text-[9px] leading-tight">
-                  {km.toFixed(1)}k
-                </span>
+              {count > 0 && (
+                <span className="text-[9px] leading-tight">{minutes}m</span>
               )}
             </button>
           );
         })}
       </div>
-      {day !== null && dayActivities.length > 0 && (
+      {day !== null && dayActivities.length + dayStrength.length > 0 && (
         <div className="mt-3 space-y-1 border-t border-[var(--color-border)] pt-3">
           <p className="mb-2 text-xs text-[var(--color-muted)]">
             {monthIndex + 1}/{day} ·{' '}
@@ -175,16 +201,26 @@ export function CalendarWidget({
               onClick={() => onSelectActivity(activity)}
             >
               <span className="min-w-0 truncate">
-                {activity.start_date_local.slice(11, 16)} · {activity.name}
+                {activity.start_date_local.slice(11, 16)} ·{' '}
+                {activity.name || activity.type}
               </span>
               <span className="shrink-0 font-mono">
-                {(activity.distance / 1000).toFixed(1)} km
+                {activityMinutes(activity)} min
               </span>
             </button>
           ))}
+          {dayStrength.map((minutes, index) => (
+            <div
+              key={`strength-${index}`}
+              className="flex w-full items-center justify-between gap-2 px-2 py-2 text-xs"
+            >
+              <span>{zh ? '力量训练' : 'Strength training'}</span>
+              <span className="shrink-0 font-mono">{minutes} min</span>
+            </div>
+          ))}
         </div>
       )}
-      {!monthActivities.length && (
+      {!sessionCount && (
         <p className="mt-3 text-center text-xs text-[var(--color-muted)]">
           {zh ? '本月没有活动' : 'No activities this month'}
         </p>
